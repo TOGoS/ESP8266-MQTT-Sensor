@@ -1,30 +1,12 @@
-/*
- Basic ESP8266 MQTT example
-
- This sketch demonstrates the capabilities of the pubsub library in combination
- with the ESP8266 board/library.
-
- It connects to an MQTT server then:
-  - publishes "hello world" to the topic "outTopic" every two seconds
-  - subscribes to the topic "inTopic", printing out any messages
-    it receives. NB - it assumes the received payloads are strings not binary
-  - If the first character of the topic "inTopic" is an 1, switch ON the ESP Led,
-    else switch it off
-
- It will reconnect to the server if the connection is lost using a blocking
- reconnect function. See the 'mqtt_reconnect_nonblocking' example for how to
- achieve the same result without blocking the main loop.
-
- To install the ESP8266 board, (using Arduino 1.6.4+):
-  - Add the following 3rd party board manager under "File -> Preferences -> Additional Boards Manager URLs":
-       http://arduino.esp8266.com/stable/package_esp8266com_index.json
-  - Open the "Tools -> Board -> Board Manager" and click install for the ESP8266"
-  - Select your ESP8266 in "Tools -> Board"
-
-*/
-
+#include <DHT.h>
+//#include <DHT_U.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
+
+// Note that pin 2 is apparently labelled 'D4' on the NodeMCU board!
+#define DHTPIN 2
+#define DHTTYPE DHT22
+
 #include "config.h"
 
 #define messageBufferSize 128
@@ -33,7 +15,10 @@
 
 WiFiClient espClient;
 PubSubClient client(espClient);
+DHT dht(DHTPIN, DHTTYPE);
 char messageBuffer[messageBufferSize];
+/** Used by the message_ building functions */
+int messageBufferOffset;
 
 char hexDigit(int num) {
   num = num & 0xF;
@@ -65,6 +50,33 @@ char *formatMacAddressInto(byte *macAddress, char separator, char *into=formatte
   into[16] = hexDigit(macAddress[5]);
   into[17] = 0;
   return into;
+}
+
+void message_clear() {
+  messageBufferOffset = 0;
+}
+void message_appendString(const char *str) {
+  while( *str != 0 && messageBufferOffset < messageBufferSize-1 ) {
+    messageBuffer[messageBufferOffset] = *str;
+    ++str;
+    ++messageBufferOffset;
+  }
+}
+void message_separate(const char *separator) {
+  if( messageBufferOffset == 0 ) return;
+  message_appendString(separator);
+}
+void message_appendFloat(float v) {
+  if( v < 0 ) {
+    messageBuffer[messageBufferOffset++] = '-'; // memory unsafety!!
+    v = -v;
+  }
+  int hundredths = (v * 100) - ((int)v) * 100;
+  int printed = snprintf(messageBuffer+messageBufferOffset, messageBufferSize-messageBufferOffset, "%d.%02d", (int)v, hundredths);
+  if( printed > 0 ) messageBufferOffset += printed;
+}
+void message_close() {
+  messageBuffer[messageBufferOffset++] = 0;
 }
 
 void setUpWifi() {
@@ -140,20 +152,51 @@ typedef struct Task {
 };
 
 void sayHi( struct Task *task ) {
-    Serial.println("Preparing a message...");
-    snprintf(messageBuffer, messageBufferSize, "Hello again from %s!", formattedMacBuffer);
-    Serial.print("Publish message: ");
-    Serial.println(messageBuffer);
-    client.publish("device-chat", messageBuffer);
+  Serial.println("Preparing a message...");
+  snprintf(messageBuffer, messageBufferSize, "Hello again from %s!", formattedMacBuffer);
+  Serial.print("Publish message: ");
+  Serial.println(messageBuffer);
+  client.publish("device-chat", messageBuffer);
+}
 
+void readDht( struct Task *task ) {
+  float temp = dht.readTemperature();
+  float humid = dht.readHumidity();
+  Serial.print("Read temperature:");
+  Serial.print(temp);
+  Serial.print(", humidity:");
+  Serial.print(humid);
+  Serial.println("");
+
+  message_clear();
+  if( !isnan(temp) ) {
+    message_separate(" ");
+    message_appendString("temperature:");
+    message_appendFloat(temp);
+  }
+  if( !isnan(temp) ) {
+    message_separate(" ");
+    message_appendString("humidity:");
+    message_appendFloat(humid);
+  }
+  message_close();
+  if( messageBufferOffset > 1 ) {
+    client.publish("device-chat", messageBuffer);
+  }
 }
 
 struct Task tasks[] = {
   {
     name: "say-hi",
     interval: 60000,
-    lastRunTime: -1,
+    lastRunTime: 0,
     invoke: sayHi
+  },
+  {
+    name: "read-dht",
+    interval: 3000,
+    lastRunTime: 0,
+    invoke: readDht
   }
 };
 
@@ -174,6 +217,7 @@ void setup() {
   setUpWifi();
   client.setServer(MQTT_SERVER, 1883);
   client.setCallback(handleIncomingMessage);
+  dht.begin();
 }
 
 void loop() {
