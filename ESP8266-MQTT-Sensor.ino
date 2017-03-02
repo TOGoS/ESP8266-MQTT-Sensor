@@ -3,8 +3,20 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
+#define D0   16
+#define D1    5
+#define D2    4
+#define D3    0
+#define D4    2
+#define D5   14
+#define D6   12
+#define D7   13
+#define D8   15
+#define D9    3
+#define D10   1
+
 // Note that pin 2 is apparently labelled 'D4' on the NodeMCU board!
-#define DHTPIN 2
+#define DHTPIN D4
 #define DHTTYPE DHT22
 
 #include "config.h"
@@ -15,7 +27,8 @@
 
 WiFiClient espClient;
 PubSubClient client(espClient);
-DHT dht(DHTPIN, DHTTYPE);
+DHT dht0(D4, DHTTYPE);
+DHT dht1(D3, DHTTYPE);
 char messageBuffer[messageBufferSize];
 /** Used by the message_ building functions */
 int messageBufferOffset;
@@ -60,6 +73,13 @@ void message_appendString(const char *str) {
     messageBuffer[messageBufferOffset] = *str;
     ++str;
     ++messageBufferOffset;
+  }
+}
+void message_appendMacAddressHex(byte *macAddress, const char *octetSeparator) {
+  for( int i=0; i<6; ++i ) {
+    if( i > 0 ) message_appendString(octetSeparator);
+    messageBuffer[messageBufferOffset++] = hexDigit(macAddress[i]>>4);
+    messageBuffer[messageBufferOffset++] = hexDigit(macAddress[i]);
   }
 }
 void message_separate(const char *separator) {
@@ -159,15 +179,32 @@ void sayHi( struct Task *task ) {
   client.publish("device-chat", messageBuffer);
 }
 
-void readDht( struct Task *task ) {
-  float temp = dht.readTemperature();
-  float humid = dht.readHumidity();
+struct DHTNode {
+  char *name;
+  DHT *dht;
+};
+
+struct DHTNode dhtNodes[] = {
+  {
+    name: "dht0",
+    dht: &dht0
+  },
+  {
+    name: "dht1",
+    dht: &dht1
+  }
+};
+
+void readDht( struct DHTNode *dhtNode ) {
+  DHT *dht = dhtNode->dht;
+  float temp = dht->readTemperature();
+  float humid = dht->readHumidity();
   Serial.print("Read temperature:");
   Serial.print(temp);
   Serial.print(", humidity:");
   Serial.print(humid);
   Serial.println("");
-
+  // TODO: Separate topics
   message_clear();
   if( !isnan(temp) ) {
     message_separate(" ");
@@ -179,9 +216,28 @@ void readDht( struct Task *task ) {
     message_appendString("humidity:");
     message_appendFloat(humid);
   }
-  message_close();
-  if( messageBufferOffset > 1 ) {
+  if( messageBufferOffset > 0 ) {
+    message_separate(" ");
+    message_appendString("nodeId:");
+    message_appendMacAddressHex(macAddressBuffer, "-");
+    message_appendString("/");
+    message_appendString(dhtNode->name);
+    message_close();
     client.publish("device-chat", messageBuffer);
+  }
+}
+
+void readDhts( struct Task *task ) {
+  int dhtNodeCount = sizeof(dhtNodes)/sizeof(struct DHTNode);
+  for( int i=0; i<dhtNodeCount; ++i ) {
+    readDht( &dhtNodes[i] );
+  }
+}
+
+void setUpDhts() {
+  int dhtNodeCount = sizeof(dhtNodes)/sizeof(struct DHTNode);
+  for( int i=0; i<dhtNodeCount; ++i ) {
+    dhtNodes[i].dht->begin();
   }
 }
 
@@ -193,10 +249,10 @@ struct Task tasks[] = {
     invoke: sayHi
   },
   {
-    name: "read-dht",
+    name: "read-dhts",
     interval: 3000,
     lastRunTime: 0,
-    invoke: readDht
+    invoke: readDhts
   }
 };
 
@@ -217,7 +273,7 @@ void setup() {
   setUpWifi();
   client.setServer(MQTT_SERVER, 1883);
   client.setCallback(handleIncomingMessage);
-  dht.begin();
+  setUpDhts();
 }
 
 void loop() {
