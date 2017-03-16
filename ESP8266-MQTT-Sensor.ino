@@ -31,6 +31,7 @@ DHT dht1(D3, DHTTYPE);
 char messageBuffer[messageBufferSize];
 /** Used by the message_ building functions */
 int messageBufferOffset;
+long taskStartTime;
 
 char hexDigit(int num) {
   num = num & 0xF;
@@ -180,16 +181,25 @@ void sayHi( struct Task *task ) {
 
 struct DHTNode {
   char *name;
+  float previousTemperature;
+  float previousHumidity;
+  long previousReportTime;
   DHT *dht;
 };
 
 struct DHTNode dhtNodes[] = {
   {
     name: "dht0",
+    previousTemperature: 0,
+    previousHumidity: 0,
+    previousReportTime: 0,
     dht: &dht0
   },
   {
     name: "dht1",
+    previousTemperature: 0,
+    previousHumidity: 0,
+    previousReportTime: 0,
     dht: &dht1
   }
 };
@@ -198,11 +208,8 @@ void readDht( struct DHTNode *dhtNode ) {
   DHT *dht = dhtNode->dht;
   float temp = dht->readTemperature();
   float humid = dht->readHumidity();
-  Serial.print("Read temperature:");
-  Serial.print(temp);
-  Serial.print(", humidity:");
-  Serial.print(humid);
-  Serial.println("");
+  bool changed = temp != dhtNode->previousTemperature || humid != dhtNode->previousHumidity;
+  
   // TODO: Separate topics
   message_clear();
   if( !isnan(temp) ) {
@@ -222,8 +229,14 @@ void readDht( struct DHTNode *dhtNode ) {
     message_appendString("/");
     message_appendString(dhtNode->name);
     message_close();
-    client.publish("device-chat", messageBuffer);
+    if( changed || taskStartTime - dhtNode->previousReportTime > 60000 ) {
+      client.publish("device-chat", messageBuffer);
+      Serial.println(messageBuffer);
+      dhtNode->previousReportTime = taskStartTime;
+    }
   }
+  dhtNode->previousTemperature = temp;
+  dhtNode->previousHumidity = humid;
 }
 
 void readDhts( struct Task *task ) {
@@ -257,11 +270,11 @@ struct Task tasks[] = {
 
 void doTasks() {
   int taskCount = sizeof(tasks)/sizeof(struct Task);
+  taskStartTime = millis();
   for( int i=0; i<taskCount; ++i ) {
-    long now = millis();
-    if( now - tasks[i].lastRunTime > tasks[i].interval ) {
+    if( taskStartTime - tasks[i].lastRunTime > tasks[i].interval ) {
       tasks[i].invoke(&tasks[i]);
-      tasks[i].lastRunTime = now;
+      tasks[i].lastRunTime = taskStartTime;
     }
   }
 }
