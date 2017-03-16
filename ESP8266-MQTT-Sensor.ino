@@ -320,6 +320,7 @@ void setup() {
   strcpy(formattedMacBuffer, "No MAC!");
   pinMode(BUILTIN_LED, OUTPUT);     // Initialize the BUILTIN_LED pin as an output
   Serial.begin(115200);
+  setUpWifi();
   pubSubClient.setServer(MQTT_SERVER, 1883);
   pubSubClient.setCallback(handleIncomingMessage);
   setUpDhts();
