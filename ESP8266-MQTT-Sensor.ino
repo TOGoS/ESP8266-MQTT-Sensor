@@ -1,34 +1,18 @@
 #include <DHT.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
-
-#define D0   16
-#define D1    5
-#define D2    4
-#define D3    0
-#define D4    2
-#define D5   14
-#define D6   12
-#define D7   13
-#define D8   15
-#define D9    3
-#define D10   1
-
-// Note that pin 2 is apparently labelled 'D4' on the NodeMCU board!
-#define DHTPIN D4
-#define DHTTYPE DHT22
-
 #include "config.h"
 
-#define messageBufferSize 128
+char topicBuffer[128];
+char messageBuffer[128];
 
 // Update these with values suitable for your network.
 
 WiFiClient espClient;
 PubSubClient client(espClient);
-DHT dht0(D4, DHTTYPE);
-DHT dht1(D3, DHTTYPE);
-char messageBuffer[messageBufferSize];
+DHT dht0(D4, DHT22);
+DHT dht1(D3, DHT22);
+
 /** Used by the message_ building functions */
 int messageBufferOffset;
 long taskStartTime;
@@ -41,9 +25,9 @@ char hexDigit(int num) {
 }
 
 byte macAddressBuffer[6];
-char formattedMacBuffer[18];
+char formattedMacAddress[18];
 
-char *formatMacAddressInto(byte *macAddress, char separator, char *into=formattedMacBuffer) {
+char *formatMacAddressInto(byte *macAddress, char separator, char *into=formattedMacAddress) {
   into[ 0] = hexDigit(macAddress[0]>>4);
   into[ 1] = hexDigit(macAddress[0]);
   into[ 2] = separator;
@@ -69,7 +53,7 @@ void message_clear() {
   messageBufferOffset = 0;
 }
 void message_appendString(const char *str) {
-  while( *str != 0 && messageBufferOffset < messageBufferSize-1 ) {
+  while( *str != 0 && messageBufferOffset < sizeof(messageBuffer)-1 ) {
     messageBuffer[messageBufferOffset] = *str;
     ++str;
     ++messageBufferOffset;
@@ -92,7 +76,7 @@ void message_appendFloat(float v) {
     v = -v;
   }
   int hundredths = (v * 100) - ((int)v) * 100;
-  int printed = snprintf(messageBuffer+messageBufferOffset, messageBufferSize-messageBufferOffset, "%d.%02d", (int)v, hundredths);
+  int printed = snprintf(messageBuffer+messageBufferOffset, sizeof(messageBuffer)-messageBufferOffset, "%d.%02d", (int)v, hundredths);
   if( printed > 0 ) messageBufferOffset += printed;
 }
 void message_close() {
@@ -103,7 +87,7 @@ void setUpWifi() {
   delay(10);
   // We start by connecting to a WiFi network
   Serial.println();
-  Serial.print("Connecting to ");
+  Serial.print("# Connecting to ");
   Serial.println(WIFI_SSID);
   
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -114,13 +98,11 @@ void setUpWifi() {
   }
   
   Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.println("IP address: ");
+  Serial.println("# WiFi connected");
+  Serial.print("# IP address: ");
   Serial.println(WiFi.localIP());
-  Serial.println("MAC address: ");
-  WiFi.macAddress(macAddressBuffer);
-  formatMacAddressInto(macAddressBuffer, ':', formattedMacBuffer);
-  Serial.println(formattedMacBuffer);
+  Serial.print("# MAC address: ");
+  Serial.println(formattedMacAddress);
 }
 
 void handleIncomingMessage(char* topic, byte* payload, unsigned int length) {
@@ -142,16 +124,51 @@ void handleIncomingMessage(char* topic, byte* payload, unsigned int length) {
   }
 }
 
+/// Message sending
+
+void chat(const char *whatever) {
+  snprintf(topicBuffer, sizeof(topicBuffer), "%s%s/chat", TOPIC_PREFIX, formattedMacAddress);
+  client.publish(topicBuffer, whatever);
+}
+
+void publishAttr(const char *deviceName, const char *attrName, float value) {
+  snprintf(topicBuffer, sizeof(topicBuffer), "%s%s/%s/%s", TOPIC_PREFIX, formattedMacAddress, deviceName, attrName);
+  message_clear();
+  message_appendFloat(value);
+  message_close();
+  client.publish(topicBuffer, messageBuffer);
+  Serial.print("# ");
+  Serial.print(deviceName);
+  Serial.print("/");
+  Serial.print(attrName);
+  Serial.print(" = ");
+  Serial.println(value);
+}
+
+void reportIpAddress() { /* TODO if needed byt porbaly isn't */ }
+
+void checkIn( struct Task *task ) {
+  chat("Hello again!");
+  reportIpAddress();
+}
+
+
+
 void reconnect() {
   // Loop until we're reconnected
   while (!client.connected()) {
-    Serial.println("Attempting MQTT connection to "MQTT_SERVER"...");
+    Serial.print("# Attempting MQTT connection to "MQTT_SERVER"...");
     // Attempt to connect
     if (client.connect("ESP8266Client")) {
       Serial.println("connected");
       // Once connected, publish an announcement...
-      snprintf(messageBuffer, messageBufferSize, "Hi I'm %s and just connected!", formattedMacBuffer);
-      client.publish("device-chat", messageBuffer);
+      snprintf(messageBuffer, sizeof(messageBuffer), "Hi I'm %s (ArduinoTemperatureHumiditySensor) and just connected!", formattedMacAddress);
+      Serial.print("# formatted a message; chatting it...");
+      chat(messageBuffer);
+      Serial.println("ok");
+      Serial.print("# reporting IP address...");
+      reportIpAddress();
+      Serial.println("ok");
       // ... and resubscribe
       //client.subscribe(IN_TOPIC);
     } else {
@@ -171,19 +188,12 @@ typedef struct Task {
   void (*invoke)(struct Task *);
 };
 
-void sayHi( struct Task *task ) {
-  Serial.println("Preparing a message...");
-  snprintf(messageBuffer, messageBufferSize, "Hello again from %s!", formattedMacBuffer);
-  Serial.print("Publish message: ");
-  Serial.println(messageBuffer);
-  client.publish("device-chat", messageBuffer);
-}
-
 struct DHTNode {
   char *name;
   float previousTemperature;
   float previousHumidity;
-  long previousReportTime;
+  long previousTemperatureReportTime;
+  long previousHumidityReportTime;
   DHT *dht;
 };
 
@@ -192,51 +202,40 @@ struct DHTNode dhtNodes[] = {
     name: "dht0",
     previousTemperature: 0,
     previousHumidity: 0,
-    previousReportTime: 0,
+    previousTemperatureReportTime: 0,
+    previousHumidityReportTime: 0,
     dht: &dht0
   },
   {
     name: "dht1",
     previousTemperature: 0,
     previousHumidity: 0,
-    previousReportTime: 0,
+    previousTemperatureReportTime: 0,
+    previousHumidityReportTime: 0,
     dht: &dht1
   }
 };
 
 void readDht( struct DHTNode *dhtNode ) {
   DHT *dht = dhtNode->dht;
+
+  // TODO: Take average over multiple seconds.
+  // If average strays by more than 0.5 of the minimum measurement unit,
+  // then report.
+
   float temp = dht->readTemperature();
-  float humid = dht->readHumidity();
-  bool changed = temp != dhtNode->previousTemperature || humid != dhtNode->previousHumidity;
+  if( (temp != dhtNode->previousTemperature || taskStartTime - dhtNode->previousTemperatureReportTime > 60000) && !isnan(temp) ) {
+    publishAttr(dhtNode->name, "temperature", temp);
+    dhtNode->previousTemperature = temp;
+    dhtNode->previousTemperatureReportTime = taskStartTime;
+  }
   
-  // TODO: Separate topics
-  message_clear();
-  if( !isnan(temp) ) {
-    message_separate(" ");
-    message_appendString("temperature:");
-    message_appendFloat(temp);
+  float humid = dht->readHumidity();
+  if( (humid != dhtNode->previousHumidity || taskStartTime - dhtNode->previousHumidityReportTime > 60000) && !isnan(humid) ) {
+    publishAttr(dhtNode->name, "humidity", humid);
+    dhtNode->previousHumidity = humid;
+    dhtNode->previousHumidityReportTime = taskStartTime;
   }
-  if( !isnan(temp) ) {
-    message_separate(" ");
-    message_appendString("humidity:");
-    message_appendFloat(humid);
-  }
-  if( messageBufferOffset > 0 ) {
-    message_separate(" ");
-    message_appendString("nodeId:");
-    message_appendMacAddressHex(macAddressBuffer, "-");
-    message_appendString("/");
-    message_appendString(dhtNode->name);
-    message_close();
-    if( changed || taskStartTime - dhtNode->previousReportTime > 60000 ) {
-      client.publish("device-chat", messageBuffer);
-      Serial.println(messageBuffer);
-      dhtNode->previousReportTime = taskStartTime;
-    }
-  }
-  dhtNode->previousTemperature = temp;
-  dhtNode->previousHumidity = humid;
 }
 
 void readDhts( struct Task *task ) {
@@ -258,7 +257,7 @@ struct Task tasks[] = {
     name: "say-hi",
     interval: 60000,
     lastRunTime: 0,
-    invoke: sayHi
+    invoke: checkIn
   },
   {
     name: "read-dhts",
@@ -282,6 +281,15 @@ void doTasks() {
 void setup() {
   pinMode(BUILTIN_LED, OUTPUT);     // Initialize the BUILTIN_LED pin as an output
   Serial.begin(115200);
+  Serial.println("# ArduinoTemperatureHumiditySensor booting");
+
+  // Seems that this can be done before WiFi.begin():
+  WiFi.macAddress(macAddressBuffer);
+  formatMacAddressInto(macAddressBuffer, ':', formattedMacAddress);
+
+  Serial.print("# MAC address: ");
+  Serial.println(formattedMacAddress);
+  
   setUpWifi();
   client.setServer(MQTT_SERVER, 1883);
   client.setCallback(handleIncomingMessage);
