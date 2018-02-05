@@ -5,17 +5,18 @@
 
 char topicBuffer[128];
 char messageBuffer[128];
+byte macAddressBuffer[6];
+char formattedMacAddress[18];
+/** Used by the message_ building functions */
+int messageBufferOffset;
+long taskStartTime;
 
 // Update these with values suitable for your network.
 
 WiFiClient espClient;
-PubSubClient client(espClient);
+PubSubClient pubSubClient(espClient);
 DHT dht0(D4, DHT22);
 DHT dht1(D3, DHT22);
-
-/** Used by the message_ building functions */
-int messageBufferOffset;
-long taskStartTime;
 
 char hexDigit(int num) {
   num = num & 0xF;
@@ -23,9 +24,6 @@ char hexDigit(int num) {
   if( num < 16 ) return 'A'+num;
   return '?'; // Should be unpossible
 }
-
-byte macAddressBuffer[6];
-char formattedMacAddress[18];
 
 char *formatMacAddressInto(byte *macAddress, char separator, char *into=formattedMacAddress) {
   into[ 0] = hexDigit(macAddress[0]>>4);
@@ -83,52 +81,75 @@ void message_close() {
   messageBuffer[messageBufferOffset++] = 0;
 }
 
-void setUpWifi() {
+const char *wifiStatusToString( int status ) {
+  switch( status ) {
+  case WL_CONNECTED: return "connected";
+  case WL_NO_SHIELD: return "no shield";
+  case WL_NO_SSID_AVAIL: return "no SSID available";
+  case WL_SCAN_COMPLETED: return "scan completed";
+  case WL_CONNECT_FAILED: return "connect failed";
+  case WL_CONNECTION_LOST: return "connection lost";
+  case WL_DISCONNECTED: return "disconnected";
+  default:
+    return "unknown status";
+  }
+}
+
+int setUpWifi() {
   delay(10);
   // We start by connecting to a WiFi network
   Serial.println();
   Serial.print("# Connecting to ");
-  Serial.println(WIFI_SSID);
+  Serial.print(WIFI_SSID);
+  Serial.print("");
   
+  int attempts = 0;
+  const int maxAttempts = 10;
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  
-  while (WiFi.status() != WL_CONNECTED) {
+  int status;
+  while( (status = WiFi.status()) != WL_CONNECTED && attempts < maxAttempts ) {
+    digitalWrite(BUILTIN_LED, attempts & 0x1 == 0 ? LOW : HIGH );
     delay(500);
     Serial.print(".");
+    ++attempts;
+    if( attempts < maxAttempts && attempts % 10 == 0 ) {
+      Serial.println("");
+      Serial.print("# Still connecting to wifi network: ");
+      Serial.print(WIFI_SSID);
+    }
   }
+  digitalWrite(BUILTIN_LED, HIGH );
   
-  Serial.println("");
-  Serial.println("# WiFi connected");
-  Serial.print("# IP address: ");
-  Serial.println(WiFi.localIP());
-  Serial.print("# MAC address: ");
-  Serial.println(formattedMacAddress);
+  if( status == WL_CONNECTED ) {
+    Serial.println("connected");
+    Serial.print("# IP address: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("# MAC address: ");
+    Serial.println(formattedMacAddress);
+    return 0;
+  } else {
+    const char *message = wifiStatusToString(status);
+    Serial.println("failed to connect");
+    Serial.println(message);
+    return 1;
+  }
 }
 
 void handleIncomingMessage(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Message arrived [");
+  Serial.print("# Incoming message on topic:");
   Serial.print(topic);
-  Serial.print("] ");
+  Serial.print(": ");
   for (int i = 0; i < length; i++) {
     Serial.print((char)payload[i]);
   }
   Serial.println();
-
-  // Switch on the LED if an 1 was received as first character
-  if ((char)payload[0] == '1') {
-    digitalWrite(BUILTIN_LED, LOW);   // Turn the LED on (Note that LOW is the voltage level
-    // but actually the LED is on; this is because
-    // it is acive low on the ESP-01)
-  } else {
-    digitalWrite(BUILTIN_LED, HIGH);  // Turn the LED off by making the voltage HIGH
-  }
 }
 
 /// Message sending
 
 void chat(const char *whatever) {
   snprintf(topicBuffer, sizeof(topicBuffer), "%s%s/chat", TOPIC_PREFIX, formattedMacAddress);
-  client.publish(topicBuffer, whatever);
+  pubSubClient.publish(topicBuffer, whatever);
 }
 
 void publishAttr(const char *deviceName, const char *attrName, float value) {
@@ -136,7 +157,7 @@ void publishAttr(const char *deviceName, const char *attrName, float value) {
   message_clear();
   message_appendFloat(value);
   message_close();
-  client.publish(topicBuffer, messageBuffer);
+  pubSubClient.publish(topicBuffer, messageBuffer);
   Serial.print("# ");
   Serial.print(deviceName);
   Serial.print("/");
@@ -148,32 +169,39 @@ void publishAttr(const char *deviceName, const char *attrName, float value) {
 void reportIpAddress() { /* TODO if needed byt porbaly isn't */ }
 
 void checkIn( struct Task *task ) {
+  reconnect();
   chat("Hello again!");
-  reportIpAddress();
 }
 
 
 
 void reconnect() {
   // Loop until we're reconnected
-  while (!client.connected()) {
-    Serial.print("# Attempting MQTT connection to "MQTT_SERVER"...");
+  while( !pubSubClient.connected() ) {
+    while( WiFi.status() != WL_CONNECTED ) {
+      Serial.println("# WiFi not connected.  Attempting to connect...");
+      if( setUpWifi() != 0 ) {
+        Serial.println("# Failed to connect to WiFi :(");
+        delay(1000);
+        return;
+      }
+    }
+    
+    Serial.print("# Attempting MQTT connection to ");
+    Serial.print(MQTT_SERVER);
+    Serial.print(" as ");
+    Serial.print(formattedMacAddress);
+    Serial.print("...");
+
     // Attempt to connect
-    if (client.connect("ESP8266Client")) {
+    if( pubSubClient.connect(formattedMacAddress) ) {
       Serial.println("connected");
       // Once connected, publish an announcement...
       snprintf(messageBuffer, sizeof(messageBuffer), "Hi I'm %s (ArduinoTemperatureHumiditySensor) and just connected!", formattedMacAddress);
-      Serial.print("# formatted a message; chatting it...");
       chat(messageBuffer);
-      Serial.println("ok");
-      Serial.print("# reporting IP address...");
-      reportIpAddress();
-      Serial.println("ok");
-      // ... and resubscribe
-      //client.subscribe(IN_TOPIC);
     } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
+      Serial.print("failed; rc=");
+      Serial.print(pubSubClient.state());
       Serial.println(" try again in 5 seconds");
       // Wait 5 seconds before retrying
       delay(5000);
@@ -217,6 +245,8 @@ struct DHTNode dhtNodes[] = {
 };
 
 void readDht( struct DHTNode *dhtNode ) {
+  digitalWrite(BUILTIN_LED, LOW);
+  
   DHT *dht = dhtNode->dht;
 
   // TODO: Take average over multiple seconds.
@@ -229,13 +259,14 @@ void readDht( struct DHTNode *dhtNode ) {
     dhtNode->previousTemperature = temp;
     dhtNode->previousTemperatureReportTime = taskStartTime;
   }
-  
   float humid = dht->readHumidity();
   if( (humid != dhtNode->previousHumidity || taskStartTime - dhtNode->previousHumidityReportTime > 60000) && !isnan(humid) ) {
     publishAttr(dhtNode->name, "humidity", humid);
     dhtNode->previousHumidity = humid;
     dhtNode->previousHumidityReportTime = taskStartTime;
   }
+  
+  digitalWrite(BUILTIN_LED, HIGH);
 }
 
 void readDhts( struct Task *task ) {
@@ -291,14 +322,14 @@ void setup() {
   Serial.println(formattedMacAddress);
   
   setUpWifi();
-  client.setServer(MQTT_SERVER, 1883);
-  client.setCallback(handleIncomingMessage);
+  pubSubClient.setServer(MQTT_SERVER, 1883);
+  pubSubClient.setCallback(handleIncomingMessage);
   setUpDhts();
 }
 
 void loop() {
-  if( !client.connected() ) reconnect();
-  client.loop();
+  reconnect();
+  pubSubClient.loop();
   doTasks();
   delay(100);
 }
