@@ -15,8 +15,31 @@ long taskStartTime;
 
 WiFiClient espClient;
 PubSubClient pubSubClient(espClient);
-DHT dht0(D4, DHT22);
-DHT dht1(D3, DHT22);
+DHT dhts[] = {
+  DHT(D1, DHT22),
+  DHT(D2, DHT22),
+  DHT(D3, DHT22),
+  DHT(D4, DHT22),
+  DHT(D5, DHT22),
+  DHT(D6, DHT22),
+  DHT(D7, DHT22),
+  DHT(D8, DHT22),
+};
+
+// These should correspond to GPIO port names, e.g.
+// dht1 reads from D1, dht8 reads from D8, etc.
+const char *dhtNames[] = {
+  "dht1",
+  "dht2",
+  "dht3",
+  "dht4",
+  "dht5",
+  "dht6",
+  "dht7",
+  "dht8",
+};
+
+const size_t dhtCount = sizeof(dhts)/sizeof(class DHT);
 
 char hexDigit(int num) {
   num = num & 0xF;
@@ -217,7 +240,7 @@ typedef struct Task {
 };
 
 struct DHTNode {
-  char *name;
+  const char *name;
   float previousTemperature;
   float previousHumidity;
   long previousTemperatureReportTime;
@@ -225,24 +248,7 @@ struct DHTNode {
   DHT *dht;
 };
 
-struct DHTNode dhtNodes[] = {
-  {
-    name: "dht0",
-    previousTemperature: 0,
-    previousHumidity: 0,
-    previousTemperatureReportTime: 0,
-    previousHumidityReportTime: 0,
-    dht: &dht0
-  },
-  {
-    name: "dht1",
-    previousTemperature: 0,
-    previousHumidity: 0,
-    previousTemperatureReportTime: 0,
-    previousHumidityReportTime: 0,
-    dht: &dht1
-  }
-};
+struct DHTNode dhtNodes[dhtCount];
 
 void readDht( struct DHTNode *dhtNode ) {
   digitalWrite(BUILTIN_LED, LOW);
@@ -279,6 +285,12 @@ void readDhts( struct Task *task ) {
 void setUpDhts() {
   int dhtNodeCount = sizeof(dhtNodes)/sizeof(struct DHTNode);
   for( int i=0; i<dhtNodeCount; ++i ) {
+    dhtNodes[i].dht = &dhts[i];
+    dhtNodes[i].name = dhtNames[i];
+    dhtNodes[i].previousTemperature = NAN;
+    dhtNodes[i].previousHumidity = NAN;
+    dhtNodes[i].previousTemperatureReportTime = -10000;
+    dhtNodes[i].previousHumidityReportTime = -10000;
     dhtNodes[i].dht->begin();
   }
 }
@@ -324,7 +336,10 @@ void setup() {
   setUpWifi();
   pubSubClient.setServer(MQTT_SERVER, 1883);
   pubSubClient.setCallback(handleIncomingMessage);
+
+  Serial.print("# Setting up DHT readers...");
   setUpDhts();
+  Serial.println("ok");
 }
 
 void loop() {
