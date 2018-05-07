@@ -152,7 +152,7 @@ int setUpWifi() {
     return 0;
   } else {
     const char *message = wifiStatusToString(status);
-    Serial.println("failed to connect");
+    Serial.print("failed to connect; status:");
     Serial.println(message);
     return 1;
   }
@@ -196,7 +196,9 @@ void checkIn( struct Task *task ) {
   chat("Hello again!");
 }
 
-
+void statusTopic(char *buffer, size_t len) {
+  snprintf(buffer, len, "%s%s/%s", TOPIC_PREFIX, formattedMacAddress, "status");
+}
 
 void reconnect() {
   // Loop until we're reconnected
@@ -215,10 +217,13 @@ void reconnect() {
     Serial.print(" as ");
     Serial.print(formattedMacAddress);
     Serial.print("...");
+    
+    statusTopic(topicBuffer, sizeof(topicBuffer));
 
     // Attempt to connect
-    if( pubSubClient.connect(formattedMacAddress) ) {
+    if( pubSubClient.connect(formattedMacAddress, topicBuffer, 1, true, "offline") ) {
       Serial.println("connected");
+      pubSubClient.publish(topicBuffer, "online", true);
       // Once connected, publish an announcement...
       snprintf(messageBuffer, sizeof(messageBuffer), "Hi I'm %s (ArduinoTemperatureHumiditySensor) and just connected!", formattedMacAddress);
       chat(messageBuffer);
