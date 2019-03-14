@@ -1,6 +1,10 @@
 #include <DHT.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
+#include "version.h"
+
+#define ON_READ_FLASH_ENABLED 1
+
 #include "config.h"
 
 char topicBuffer[128];
@@ -124,7 +128,6 @@ int setUpWifi() {
   Serial.println();
   Serial.print("# Connecting to ");
   Serial.print(WIFI_SSID);
-  Serial.print("");
   
   int attempts = 0;
   const int maxAttempts = 10;
@@ -173,6 +176,7 @@ void handleIncomingMessage(char* topic, byte* payload, unsigned int length) {
 void chat(const char *whatever) {
   snprintf(topicBuffer, sizeof(topicBuffer), "%s%s/chat", TOPIC_PREFIX, formattedMacAddress);
   pubSubClient.publish(topicBuffer, whatever);
+  Serial.println(whatever);
 }
 
 void publishAttr(const char *deviceName, const char *attrName, float value) {
@@ -256,7 +260,7 @@ struct DHTNode {
 struct DHTNode dhtNodes[dhtCount];
 
 void readDht( struct DHTNode *dhtNode ) {
-  digitalWrite(BUILTIN_LED, LOW);
+  if( ON_READ_FLASH_ENABLED ) digitalWrite(BUILTIN_LED, LOW);
   
   DHT *dht = dhtNode->dht;
 
@@ -277,7 +281,7 @@ void readDht( struct DHTNode *dhtNode ) {
     dhtNode->previousHumidityReportTime = taskStartTime;
   }
   
-  digitalWrite(BUILTIN_LED, HIGH);
+  if( ON_READ_FLASH_ENABLED ) digitalWrite(BUILTIN_LED, HIGH);
 }
 
 void readDhts( struct Task *task ) {
@@ -329,7 +333,14 @@ void doTasks() {
 void setup() {
   pinMode(BUILTIN_LED, OUTPUT);     // Initialize the BUILTIN_LED pin as an output
   Serial.begin(115200);
-  Serial.println("# ArduinoTemperatureHumiditySensor booting");
+  Serial.println("");
+  Serial.print("# "); // Hi!  I'm....
+  Serial.print(ALC_NAME);
+  Serial.print(" ");
+  Serial.print(ALC_SUBNAME);
+  Serial.print(" v");
+  Serial.print(ALC_VERSION);
+  Serial.println(", booting!");
 
   // Seems that this can be done before WiFi.begin():
   WiFi.macAddress(macAddressBuffer);
@@ -348,9 +359,14 @@ void setup() {
 }
 
 void loop() {
+  while( Serial.available() > 0 ) {
+    char inputChar = Serial.read();
+    if( inputChar == '\n' ) {
+      Serial.println("# Hey, thanks for the input!");
+    }
+  }    
   reconnect();
   pubSubClient.loop();
   doTasks();
   delay(100);
 }
-
