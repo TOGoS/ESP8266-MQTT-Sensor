@@ -15,16 +15,26 @@ char formattedMacAddress[18];
 int messageBufferOffset;
 long taskStartTime;
 
-// Update these with values suitable for your network.
+void handleIncomingMqttMessage(char* topic, byte* payload, unsigned int length) {
+  Serial.print("# Incoming message on topic:");
+  Serial.print(topic);
+  Serial.print(": ");
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
+}
+
 
 WiFiClient espClient;
-PubSubClient pubSubClient(espClient);
+PubSubClient pubSubClient(MQTT_SERVER_HOSTNAME, MQTT_SERVER_PORT, handleIncomingMqttMessage, espClient);
+
 DHT dhts[] = {
   DHT(D1, DHT22),
   DHT(D2, DHT22),
   DHT(D3, DHT22),
   DHT(D4, DHT22),
-  DHT(D5, DHT22),
+  //DHT(D5, DHT22),
   DHT(D6, DHT22),
   DHT(D7, DHT22),
   DHT(D8, DHT22),
@@ -37,7 +47,7 @@ const char *dhtNames[] = {
   "dht2",
   "dht3",
   "dht4",
-  "dht5",
+  //"dht5",
   "dht6",
   "dht7",
   "dht8",
@@ -124,7 +134,6 @@ const char *wifiStatusToString( int status ) {
 
 int setUpWifi() {
   delay(10);
-  // We start by connecting to a WiFi network
   Serial.println();
   Serial.print("# Connecting to ");
   Serial.print(WIFI_SSID);
@@ -161,21 +170,12 @@ int setUpWifi() {
   }
 }
 
-void handleIncomingMessage(char* topic, byte* payload, unsigned int length) {
-  Serial.print("# Incoming message on topic:");
-  Serial.print(topic);
-  Serial.print(": ");
-  for (int i = 0; i < length; i++) {
-    Serial.print((char)payload[i]);
-  }
-  Serial.println();
-}
-
 /// Message sending
 
 void chat(const char *whatever) {
   snprintf(topicBuffer, sizeof(topicBuffer), "%s%s/chat", TOPIC_PREFIX, formattedMacAddress);
   pubSubClient.publish(topicBuffer, whatever);
+  Serial.print("# ");
   Serial.println(whatever);
 }
 
@@ -185,19 +185,17 @@ void publishAttr(const char *deviceName, const char *attrName, float value) {
   message_appendFloat(value);
   message_close();
   pubSubClient.publish(topicBuffer, messageBuffer);
-  Serial.print("# ");
   Serial.print(deviceName);
   Serial.print("/");
   Serial.print(attrName);
-  Serial.print(" = ");
+  Serial.print(" ");
   Serial.println(value);
 }
 
 void reportIpAddress() { /* TODO if needed byt porbaly isn't */ }
 
 void checkIn( struct Task *task ) {
-  reconnect();
-  chat("Hello again!");
+  chat("Still alive!");
 }
 
 void statusTopic(char *buffer, size_t len) {
@@ -205,19 +203,18 @@ void statusTopic(char *buffer, size_t len) {
 }
 
 void reconnect() {
-  // Loop until we're reconnected
-  while( !pubSubClient.connected() ) {
-    while( WiFi.status() != WL_CONNECTED ) {
-      Serial.println("# WiFi not connected.  Attempting to connect...");
-      if( setUpWifi() != 0 ) {
-        Serial.println("# Failed to connect to WiFi :(");
-        delay(1000);
-        return;
-      }
+  if( WiFi.status() != WL_CONNECTED ) {
+    Serial.println("# WiFi not connected.  Attempting to connect...");
+    if( setUpWifi() != 0 ) {
+      Serial.println("# Failed to connect to WiFi :(");
+      delay(1000);
+      return;
     }
-    
+  }
+
+  if( !pubSubClient.connected() ) {
     Serial.print("# Attempting MQTT connection to ");
-    Serial.print(MQTT_SERVER);
+    Serial.print(MQTT_SERVER_HOSTNAME);
     Serial.print(" as ");
     Serial.print(formattedMacAddress);
     Serial.print("...");
@@ -225,7 +222,7 @@ void reconnect() {
     statusTopic(topicBuffer, sizeof(topicBuffer));
 
     // Attempt to connect
-    if( pubSubClient.connect(formattedMacAddress, topicBuffer, 1, true, "offline") ) {
+    if( pubSubClient.connect(formattedMacAddress, topicBuffer, 1, true, "disconnected") ) {
       Serial.println("connected");
       pubSubClient.publish(topicBuffer, "online", true);
       // Once connected, publish an announcement...
@@ -260,7 +257,7 @@ struct DHTNode {
 struct DHTNode dhtNodes[dhtCount];
 
 void readDht( struct DHTNode *dhtNode ) {
-  if( ON_READ_FLASH_ENABLED ) digitalWrite(BUILTIN_LED, LOW);
+  //if( ON_READ_FLASH_ENABLED ) digitalWrite(BUILTIN_LED, LOW);
   
   DHT *dht = dhtNode->dht;
 
@@ -281,7 +278,7 @@ void readDht( struct DHTNode *dhtNode ) {
     dhtNode->previousHumidityReportTime = taskStartTime;
   }
   
-  if( ON_READ_FLASH_ENABLED ) digitalWrite(BUILTIN_LED, HIGH);
+  //if( ON_READ_FLASH_ENABLED ) digitalWrite(BUILTIN_LED, HIGH);
 }
 
 void readDhts( struct Task *task ) {
@@ -331,16 +328,39 @@ void doTasks() {
 }
 
 void setup() {
+  delay(500);
+  pinMode(LED_BUILTIN, OUTPUT);
+  for( unsigned int d = 0; d < 5; ++d ) {
+    digitalWrite(LED_BUILTIN, LOW); // Light on
+    delay(100);
+    digitalWrite(LED_BUILTIN, HIGH); // Light off
+    delay(200);
+  }
+
   pinMode(BUILTIN_LED, OUTPUT);     // Initialize the BUILTIN_LED pin as an output
   Serial.begin(115200);
   Serial.println("");
   Serial.print("# "); // Hi!  I'm....
   Serial.print(ALC_NAME);
-  Serial.print(" ");
-  Serial.print(ALC_SUBNAME);
-  Serial.print(" v");
+  //Serial.print(" ");
+  //Serial.print(ALC_SUBNAME);
+  Serial.print(" version:");
   Serial.print(ALC_VERSION);
+  #ifdef BUILD_NAME
+  Serial.print(" build:");
+  Serial.print(BUILD_NAME);
+  #endif
   Serial.println(", booting!");
+
+  Serial.print("# D1 = "); Serial.println(D1);
+  Serial.print("# D2 = "); Serial.println(D2);
+  Serial.print("# D3 = "); Serial.println(D3);
+  Serial.print("# D4 = "); Serial.println(D4);
+  Serial.print("# D5 = "); Serial.println(D5);
+  Serial.print("# D6 = "); Serial.println(D6);
+  Serial.print("# D7 = "); Serial.println(D7);
+  Serial.print("# D8 = "); Serial.println(D8);
+  Serial.print("# BUILTIN_LED = "); Serial.println(BUILTIN_LED);
 
   // Seems that this can be done before WiFi.begin():
   WiFi.macAddress(macAddressBuffer);
@@ -349,13 +369,11 @@ void setup() {
   Serial.print("# MAC address: ");
   Serial.println(formattedMacAddress);
   
-  setUpWifi();
-  pubSubClient.setServer(MQTT_SERVER, 1883);
-  pubSubClient.setCallback(handleIncomingMessage);
-
   Serial.print("# Setting up DHT readers...");
   setUpDhts();
   Serial.println("ok");
+
+  setUpWifi();
 }
 
 void loop() {
@@ -364,7 +382,7 @@ void loop() {
     if( inputChar == '\n' ) {
       Serial.println("# Hey, thanks for the input!");
     }
-  }    
+  }
   reconnect();
   pubSubClient.loop();
   doTasks();

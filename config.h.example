@@ -1,4 +1,6 @@
 #define WIFI_SSID "....."
 #define WIFI_PASSWORD "......"
-#define MQTT_SERVER "....."
+#define BUILD_NAME "whatev"
+#define MQTT_SERVER_HOSTNAME "....."
+#define MQTT_SERVER_PORT 1883
 #define TOPIC_PREFIX ""
