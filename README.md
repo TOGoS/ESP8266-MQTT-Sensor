@@ -24,3 +24,7 @@ one pin goes to Vcc (anything from 3.3V to 6V),
 and the last pin goes to your digital output pin and a pull-up resistor.
 There's a 4th pin ('null') that does nothing.
 Some DHT22 packages with only 3 pins that include the pull-up resistor.
+
+### Changelog
+
+- 2019-03-14 - Configuration can be done via serial port

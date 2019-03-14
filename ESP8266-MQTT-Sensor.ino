@@ -1,11 +1,23 @@
 #include <DHT.h>
+#include <EEPROM.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
+#include <cstdio>
+
 #include "version.h"
 
 #define ON_READ_FLASH_ENABLED 1
 
 #include "config.h"
+
+enum class EEPROMAddresses {
+  VERSION_HI = 0,
+  VERSION_LO = 1,
+  DHT_ENABLEMENT = 2,
+  END
+};
+
+uint16_t savedEepromVersion = 0;
 
 char topicBuffer[128];
 char messageBuffer[128];
@@ -34,7 +46,7 @@ DHT dhts[] = {
   DHT(D2, DHT22),
   DHT(D3, DHT22),
   DHT(D4, DHT22),
-  //DHT(D5, DHT22),
+  DHT(D5, DHT22),
   DHT(D6, DHT22),
   DHT(D7, DHT22),
   DHT(D8, DHT22),
@@ -47,7 +59,7 @@ const char *dhtNames[] = {
   "dht2",
   "dht3",
   "dht4",
-  //"dht5",
+  "dht5",
   "dht6",
   "dht7",
   "dht8",
@@ -134,7 +146,6 @@ const char *wifiStatusToString( int status ) {
 
 int setUpWifi() {
   delay(10);
-  Serial.println();
   Serial.print("# Connecting to ");
   Serial.print(WIFI_SSID);
   
@@ -177,6 +188,17 @@ void chat(const char *whatever) {
   pubSubClient.publish(topicBuffer, whatever);
   Serial.print("# ");
   Serial.println(whatever);
+}
+
+void publishAttr(const char *deviceName, const char *attrName, bool value) {
+  snprintf(topicBuffer, sizeof(topicBuffer), "%s%s/%s/%s", TOPIC_PREFIX, formattedMacAddress, deviceName, attrName);
+  const char *valStr = value ? "true" : "false";
+  pubSubClient.publish(topicBuffer, valStr);
+  Serial.print(deviceName);
+  Serial.print("/");
+  Serial.print(attrName);
+  Serial.print(" ");
+  Serial.println(valStr);
 }
 
 void publishAttr(const char *deviceName, const char *attrName, float value) {
@@ -247,6 +269,7 @@ typedef struct Task {
 
 struct DHTNode {
   const char *name;
+  bool autoReadEnabled;
   float previousTemperature;
   float previousHumidity;
   long previousTemperatureReportTime;
@@ -255,43 +278,47 @@ struct DHTNode {
 };
 
 struct DHTNode dhtNodes[dhtCount];
+const int dhtNodeCount = sizeof(dhtNodes)/sizeof(struct DHTNode);
 
-void readDht( struct DHTNode *dhtNode ) {
+void readDht( DHTNode &dhtNode, bool explicitly=false ) {
   //if( ON_READ_FLASH_ENABLED ) digitalWrite(BUILTIN_LED, LOW);
   
-  DHT *dht = dhtNode->dht;
+  DHT *dht = dhtNode.dht;
 
   // TODO: Take average over multiple seconds.
   // If average strays by more than 0.5 of the minimum measurement unit,
   // then report.
 
   float temp = dht->readTemperature();
-  if( (temp != dhtNode->previousTemperature || taskStartTime - dhtNode->previousTemperatureReportTime > 60000) && !isnan(temp) ) {
-    publishAttr(dhtNode->name, "temperature", temp);
-    dhtNode->previousTemperature = temp;
-    dhtNode->previousTemperatureReportTime = taskStartTime;
+  if( explicitly || (temp != dhtNode.previousTemperature || taskStartTime - dhtNode.previousTemperatureReportTime > 60000) && !isnan(temp) ) {
+    publishAttr(dhtNode.name, "temperature", temp);
+    dhtNode.previousTemperature = temp;
+    dhtNode.previousTemperatureReportTime = taskStartTime;
   }
   float humid = dht->readHumidity();
-  if( (humid != dhtNode->previousHumidity || taskStartTime - dhtNode->previousHumidityReportTime > 60000) && !isnan(humid) ) {
-    publishAttr(dhtNode->name, "humidity", humid);
-    dhtNode->previousHumidity = humid;
-    dhtNode->previousHumidityReportTime = taskStartTime;
+  if( explicitly || (humid != dhtNode.previousHumidity || taskStartTime - dhtNode.previousHumidityReportTime > 60000) && !isnan(humid) ) {
+    publishAttr(dhtNode.name, "humidity", humid);
+    dhtNode.previousHumidity = humid;
+    dhtNode.previousHumidityReportTime = taskStartTime;
   }
   
   //if( ON_READ_FLASH_ENABLED ) digitalWrite(BUILTIN_LED, HIGH);
 }
 
 void readDhts( struct Task *task ) {
-  int dhtNodeCount = sizeof(dhtNodes)/sizeof(struct DHTNode);
   for( int i=0; i<dhtNodeCount; ++i ) {
-    readDht( &dhtNodes[i] );
+    if( dhtNodes[i].autoReadEnabled ) {
+      readDht( dhtNodes[i], false );
+    }
   }
 }
 
 void setUpDhts() {
-  int dhtNodeCount = sizeof(dhtNodes)/sizeof(struct DHTNode);
+  uint8_t dhtEnablement = (savedEepromVersion == EEPROM_SAVE_VERSION) ?
+    EEPROM.read((off_t)EEPROMAddresses::DHT_ENABLEMENT) : 0xFF;
   for( int i=0; i<dhtNodeCount; ++i ) {
     dhtNodes[i].dht = &dhts[i];
+    dhtNodes[i].autoReadEnabled = (((dhtEnablement >> i) & 1) == 1);
     dhtNodes[i].name = dhtNames[i];
     dhtNodes[i].previousTemperature = NAN;
     dhtNodes[i].previousHumidity = NAN;
@@ -352,6 +379,44 @@ void setup() {
   #endif
   Serial.println(", booting!");
 
+  // Seems that this can be done before WiFi.begin():
+  WiFi.macAddress(macAddressBuffer);
+  formatMacAddressInto(macAddressBuffer, ':', formattedMacAddress);
+
+  Serial.print("# MAC address: ");
+  Serial.println(formattedMacAddress);
+
+  Serial.print("# Setting up EEPROM...");
+  EEPROM.begin((size_t)EEPROMAddresses::END);
+  savedEepromVersion =
+    (EEPROM.read((off_t)EEPROMAddresses::VERSION_HI) << 8) |
+    (EEPROM.read((off_t)EEPROMAddresses::VERSION_LO));
+  Serial.print("version:");
+  Serial.print(savedEepromVersion);
+  if( savedEepromVersion == EEPROM_SAVE_VERSION ) {
+    Serial.println("; matches current");
+  } else {
+    Serial.println("; does NOT match current; can't read");
+  }
+  
+  Serial.print("# Setting up DHT readers...");
+  setUpDhts();
+  Serial.println("ok");
+
+  setUpWifi();
+}
+
+void dumpSensorList() {
+  const char *sensorRowFmt = "# %5s %5s\n";
+  Serial.println("# Sensors:");
+  Serial.printf(sensorRowFmt, "name", "enabled");
+  for( int i=0; i<dhtNodeCount; ++i ) {
+    const DHTNode &dhtNode = dhtNodes[i];
+    Serial.printf(sensorRowFmt, dhtNode.name, dhtNode.autoReadEnabled ? "true" : "false");
+  }
+}
+
+void dumpPinList() {
   Serial.print("# D1 = "); Serial.println(D1);
   Serial.print("# D2 = "); Serial.println(D2);
   Serial.print("# D3 = "); Serial.println(D3);
@@ -361,26 +426,105 @@ void setup() {
   Serial.print("# D7 = "); Serial.println(D7);
   Serial.print("# D8 = "); Serial.println(D8);
   Serial.print("# BUILTIN_LED = "); Serial.println(BUILTIN_LED);
+}
 
-  // Seems that this can be done before WiFi.begin():
-  WiFi.macAddress(macAddressBuffer);
-  formatMacAddressInto(macAddressBuffer, ':', formattedMacAddress);
+struct DHTNode *findDhtByName( const char *dhtName, bool complainOtherwise ) {
+  for( int i=0; i<dhtNodeCount; ++i ) {
+    DHTNode &dhtNode = dhtNodes[i];
+    if( strcmp(dhtNode.name, dhtName) == 0 ) {
+      return &dhtNode;
+    }
+  }
+  if( complainOtherwise ) {
+    Serial.print("# Sensor '");
+    Serial.print(dhtName);
+    Serial.println("' not found");
+  }
+  return nullptr;
+}
 
-  Serial.print("# MAC address: ");
-  Serial.println(formattedMacAddress);
+void commitSettings() {
+  uint8_t dhtEnablement = 0;
+  for( int i=0; i<dhtNodeCount; ++i ) {
+    const DHTNode &dhtNode = dhtNodes[i];
+    dhtEnablement |= ((dhtNode.autoReadEnabled ? 1 : 0) << i);
+  }
+  EEPROM.write((off_t)EEPROMAddresses::VERSION_HI, EEPROM_SAVE_VERSION >> 8);
+  EEPROM.write((off_t)EEPROMAddresses::VERSION_LO, EEPROM_SAVE_VERSION);
   
-  Serial.print("# Setting up DHT readers...");
-  setUpDhts();
-  Serial.println("ok");
+  Serial.print("Writing 0x");
+  Serial.print(dhtEnablement, 16);
+  Serial.print(" to dhtEnablement byte");
+  EEPROM.write((off_t)EEPROMAddresses::DHT_ENABLEMENT, dhtEnablement);
+  EEPROM.commit();
+  savedEepromVersion = EEPROM_SAVE_VERSION; // If we did it right, lawl.
+  Serial.print("# Saved settings to EEPROM; version = ");
+  Serial.println(EEPROM_SAVE_VERSION);
+}
 
-  setUpWifi();
+void setDhtEnabled(DHTNode& dhtNode, bool enabled) {
+  dhtNode.autoReadEnabled = enabled;
+  publishAttr(dhtNode.name, "enabled", enabled);
+}
+
+char lineBuffer[128];
+size_t lineBufferLength = 0;
+
+void doCommand( const char *command ) {
+  char dhtName[10];
+  DHTNode *dhtNode;
+  if( sscanf(command, "read %9s", dhtName) ) {
+    if( (dhtNode = findDhtByName(dhtName, true)) ) {
+      readDht(*dhtNode, true);
+      return;
+    }
+  } else if( (strcmp(command, "enable *") == 0) ) {
+    for( int i=0; i<dhtNodeCount; ++i ) {
+      setDhtEnabled(dhtNodes[i], true);
+    }
+  } else if( (strcmp(command, "disable *") == 0) ) {
+    for( int i=0; i<dhtNodeCount; ++i ) {
+      setDhtEnabled(dhtNodes[i], false);
+    }
+  } else if( sscanf(command, "enable %9s", dhtName) ) {
+    if( (dhtNode = findDhtByName(dhtName, true)) ) {
+      setDhtEnabled(*dhtNode, true);
+      return;
+    }
+  } else if( sscanf(command, "disable %9s", dhtName) ) {
+    if( (dhtNode = findDhtByName(dhtName, true)) ) {
+      setDhtEnabled(*dhtNode, false);
+      return;
+    }
+  } else if( strcmp("list-sensors", command) == 0 ) {
+    dumpSensorList();
+  } else if( strcmp("list-pins", command) == 0 ) {
+    dumpPinList();
+  } else if( strcmp("save", command) == 0 ) {
+    commitSettings();
+  } else if( strcmp("help", command) == 0 ) {
+    Serial.println("# Commands:");
+    Serial.println("#   list-sensors ; List sensors");
+    Serial.println("#   list-pins ; List I/O pin names and numbers");
+    Serial.println("#   read dht<N> ; Read and publish sensor data");
+    Serial.println("#   enable|disable dht<N>|* ; Enable or disable auto-reading of a sensor");
+    Serial.println("#   save ; Save settings to EEPROM");
+  } else {
+    Serial.print("# Unrecognized command: ");
+    Serial.println(command);
+  }
 }
 
 void loop() {
   while( Serial.available() > 0 ) {
     char inputChar = Serial.read();
     if( inputChar == '\n' ) {
-      Serial.println("# Hey, thanks for the input!");
+      lineBuffer[lineBufferLength++] = 0;
+      doCommand(lineBuffer);
+      lineBufferLength = 0;
+    } else {
+      lineBuffer[lineBufferLength++] = inputChar;
+      if(lineBufferLength == sizeof(lineBuffer)) --lineBufferLength;
     }
   }
   reconnect();
