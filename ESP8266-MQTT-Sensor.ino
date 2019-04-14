@@ -291,6 +291,7 @@ typedef struct Task {
 struct DHTNode {
   const char *name;
   bool previousConnectedness;
+  bool connectednessReported = false;
   bool autoReadEnabled;
   float previousTemperature;
   float previousHumidity;
@@ -313,9 +314,10 @@ void readDht( DHTNode &dhtNode, bool explicitly=false ) {
 
   float temp = dht->readTemperature();
   bool connectedness = !isnan(temp);
-  if( explicitly || (connectedness != dhtNode.previousConnectedness) ) {
+  if( explicitly || !dhtNode.connectednessReported || (connectedness != dhtNode.previousConnectedness) ) {
     publishAttr(dhtNode.name, "status", connectedness ? "online" : "disconnected", true);
     dhtNode.previousConnectedness = connectedness;
+    dhtNode.connectednessReported = true;
   }
   if( explicitly || (temp != dhtNode.previousTemperature || taskStartTime - dhtNode.previousTemperatureReportTime > 60000) && !isnan(temp) ) {
     publishAttr(dhtNode.name, "temperature", temp);
@@ -352,6 +354,13 @@ void setUpDhts() {
     dhtNodes[i].previousTemperatureReportTime = -10000;
     dhtNodes[i].previousHumidityReportTime = -10000;
     dhtNodes[i].dht->begin();
+  }
+}
+void setUpDhts2() {
+  for( int i=0; i<dhtNodeCount; ++i ) {
+    DHTNode &dhtNode = dhtNodes[i];
+    publishAttr(dhtNode.name, "status", dhtNode.autoReadEnabled ? "enabled" : "disabled", true);
+    dhtNode.connectednessReported = false;
   }
 }
 
@@ -431,6 +440,7 @@ void setup() {
   Serial.println("ok");
 
   setUpWifi();
+  setUpDhts2();
 }
 
 void dumpSensorList() {
@@ -490,8 +500,11 @@ void commitSettings() {
 }
 
 void setDhtEnabled(DHTNode& dhtNode, bool enabled) {
-  dhtNode.autoReadEnabled = enabled;
-  publishAttr(dhtNode.name, "enabled", enabled);
+  if( dhtNode.autoReadEnabled != enabled ) {
+    dhtNode.autoReadEnabled = enabled;
+    publishAttr(dhtNode.name, "status", enabled ? "enabled" : "disabled", true);
+    dhtNode.connectednessReported = false;
+  }
 }
 
 char lineBuffer[128];
