@@ -192,6 +192,16 @@ void chat(const char *whatever) {
   Serial.println(whatever);
 }
 
+void publishAttr(const char *deviceName, const char *attrName, const char *value, bool retain) {
+  snprintf(topicBuffer, sizeof(topicBuffer), "%s%s/%s/%s", TOPIC_PREFIX, formattedMacAddress, deviceName, attrName);
+  pubSubClient.publish(topicBuffer, value, retain);
+  Serial.print(deviceName);
+  Serial.print("/");
+  Serial.print(attrName);
+  Serial.print(" ");
+  Serial.println(value);
+}
+
 void publishAttr(const char *deviceName, const char *attrName, bool value) {
   snprintf(topicBuffer, sizeof(topicBuffer), "%s%s/%s/%s", TOPIC_PREFIX, formattedMacAddress, deviceName, attrName);
   const char *valStr = value ? "true" : "false";
@@ -249,6 +259,15 @@ void reconnect() {
     if( pubSubClient.connect(formattedMacAddress, MQTT_USERNAME, MQTT_PASSWORD, topicBuffer, 1, true, "disconnected") ) {
       Serial.println("connected");
       pubSubClient.publish(topicBuffer, "online", true);
+      snprintf(topicBuffer, sizeof(topicBuffer), "%s%s/%s", TOPIC_PREFIX, formattedMacAddress, "fw/name");
+      pubSubClient.publish(topicBuffer, ALC_NAME, true);
+      snprintf(topicBuffer, sizeof(topicBuffer), "%s%s/%s", TOPIC_PREFIX, formattedMacAddress, "fw/version");
+#ifdef BUILD_NAME
+      snprintf(messageBuffer, sizeof(messageBuffer), "%s build %s", ALC_VERSION, BUILD_NAME);
+      pubSubClient.publish(topicBuffer, messageBuffer, true);
+#else
+      pubSubClient.publish(topicBuffer, ALC_VERSION, true);
+#endif
       // Once connected, publish an announcement...
       snprintf(messageBuffer, sizeof(messageBuffer), "Hi I'm %s (ArduinoTemperatureHumiditySensor) and just connected!", formattedMacAddress);
       chat(messageBuffer);
@@ -271,6 +290,7 @@ typedef struct Task {
 
 struct DHTNode {
   const char *name;
+  bool previousConnectedness;
   bool autoReadEnabled;
   float previousTemperature;
   float previousHumidity;
@@ -292,6 +312,11 @@ void readDht( DHTNode &dhtNode, bool explicitly=false ) {
   // then report.
 
   float temp = dht->readTemperature();
+  bool connectedness = !isnan(temp);
+  if( explicitly || (connectedness != dhtNode.previousConnectedness) ) {
+    publishAttr(dhtNode.name, "status", connectedness ? "online" : "disconnected", true);
+    dhtNode.previousConnectedness = connectedness;
+  }
   if( explicitly || (temp != dhtNode.previousTemperature || taskStartTime - dhtNode.previousTemperatureReportTime > 60000) && !isnan(temp) ) {
     publishAttr(dhtNode.name, "temperature", temp);
     dhtNode.previousTemperature = temp;
