@@ -7,6 +7,8 @@
 #include "version.h"
 
 #define ON_READ_FLASH_ENABLED 1
+#define MQTT_USERNAME NULL
+#define MQTT_PASSWORD NULL
 
 #include "config.h"
 
@@ -244,7 +246,7 @@ void reconnect() {
     statusTopic(topicBuffer, sizeof(topicBuffer));
 
     // Attempt to connect
-    if( pubSubClient.connect(formattedMacAddress, topicBuffer, 1, true, "disconnected") ) {
+    if( pubSubClient.connect(formattedMacAddress, MQTT_USERNAME, MQTT_PASSWORD, topicBuffer, 1, true, "disconnected") ) {
       Serial.println("connected");
       pubSubClient.publish(topicBuffer, "online", true);
       // Once connected, publish an announcement...
